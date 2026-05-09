@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "seafire",
+        .name = "old_seafire",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -36,9 +36,24 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkLibrary(thelib);
     b.installArtifact(exe);
 
+    const aexe = b.addExecutable(.{
+        .name = "seafire",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/amain.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "seafire", .module = mod },
+            },
+        }),
+    });
+    aexe.root_module.linkSystemLibrary("asound", .{});
+    b.installArtifact(aexe);
+
     const run_step = b.step("run", "Run the app");
 
-    const run_cmd = b.addRunArtifact(exe);
+    const run_cmd = b.addRunArtifact(aexe);
     run_step.dependOn(&run_cmd.step);
 
     run_cmd.step.dependOn(b.getInstallStep());
