@@ -3,9 +3,14 @@ const Io = std.Io;
 const c = @import("asoundlib");
 
 const MAX_FRAMES = 256;
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var pcm: ?*c.snd_pcm_t = undefined;
     const PCM_DEVICE = "default";
+
+    const argv = init.minimal.args.vector;
+    if (argv.len < 2) return error.usage;
+    const firstarg = std.mem.span(argv[1]);
+    const readin = try readall(init.io, init.gpa, firstarg);
 
     try ok(c.snd_pcm_open(&pcm, PCM_DEVICE, c.SND_PCM_STREAM_PLAYBACK, 0));
 
@@ -31,7 +36,7 @@ pub fn main() !void {
     _ = c.snd_pcm_hw_params_get_period_size(params, &period_size, &dir);
     std.debug.print("afka {} but {}\n", .{ period_size, frames });
 
-    try make_noise(pcm, sample_rate, period_size);
+    try make_noise(pcm, sample_rate, period_size, readin);
 
     // try ok(c.snd_pcm_prepare(pcm));
 
@@ -44,11 +49,12 @@ const Channel = struct {
     attn: [3]f64,
 };
 
-fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void {
+const BASE_FREQUENCY = 440.0;
+
+fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize, pattern: []u8) !void {
     var buffer: [MAX_FRAMES][2]i16 = undefined;
     const num_samples = 200 * sample_rate;
     const math = std.math;
-    const FREQUENCY = 440.0;
     const DECREAS = 0.2;
 
     std.debug.print("sampel {} fast {}\n", .{ sample_rate, period_size });
@@ -56,10 +62,10 @@ fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void
     const one_over = 2 * math.pi / @as(f64, sample_rate);
     const seq_ticklen: u32 = @trunc(@as(f64, sample_rate) * 0.3);
 
-    const sequins: [9]u32 = .{ 0, 10, 13, 18, 5, 0, 8, 10, 13 };
+    var pat_pos: usize = 0;
 
     var ch: Channel = .{
-        .tfreq = FREQUENCY * one_over,
+        .tfreq = BASE_FREQUENCY * one_over,
         .ratio = .{ 3.0, 2.0, 1.0 },
         .phase_off = .{ 0, 0, 0 },
         .attn = .{ 1.3, 0.9, 0.6 },
@@ -96,22 +102,68 @@ fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void
 
         seq_t += 1;
         if (seq_t >= seq_ticklen) {
-            ch.attn[0] = 0.92 * ch.attn[0];
-            ch.attn[1] = 0.98 * ch.attn[1];
-            // ch.ratio[1] = 5.0 - ch.ratio[1];
-
             tick += 1;
             seq_t = 0;
 
-            const note = sequins[tick % sequins.len];
-            const freq = 440.0 * math.pow(f64, 2, note / @as(f64, 31.0));
-            ch.tfreq = freq * one_over;
+            while (true) {
+                while (pat_pos < pattern.len) : (pat_pos += 1) {
+                    if (pattern[pat_pos] != ' ') {
+                        break;
+                    }
+                }
+                if (pat_pos == pattern.len) {
+                    pat_pos = 0;
+                    break;
+                }
+                const cmd = pattern[pat_pos];
+                pat_pos += 1;
+                if (cmd == '\n') {
+                    if (pat_pos == pattern.len)
+                        pat_pos = 0;
+                    break;
+                }
+
+                if (cmd == 'n' or cmd == 'N') {
+                    const n = @as(u32, @intCast(num(pattern, &pat_pos))) + if (cmd == 'n') @as(u32, 31) else 0;
+                    const freq = 220.0 * math.pow(f64, 2, n / @as(f64, 31.0));
+                    ch.tfreq = freq * one_over;
+                } else if (cmd == 'a') {
+                    const n: u32 = @intCast(num(pattern, &pat_pos));
+                    ch.attn[2] = n / @as(f64, 100.0);
+                }
+            }
+            // ch.ratio[1] = 5.0 - ch.ratio[1];
+
         }
     }
+}
+
+pub fn num(p: []u8, pos: *usize) u64 {
+    var val: u64 = 0;
+    while (pos.* < p.len) : (pos.* += 1) {
+        const next = p[pos.*];
+        if ('0' <= next and next <= '9') {
+            val = val * 10 + (next - '0');
+        } else {
+            break;
+        }
+    }
+    return val;
 }
 
 fn ok(status: c_int) !void {
     if (status < 0) {
         std.debug.print("foooka: {s}\n", .{c.snd_strerror(status)});
     }
+}
+
+pub fn readall(io: std.Io, gpa: std.mem.Allocator, filename: []const u8) ![]u8 {
+    const fil = try std.Io.Dir.cwd().openFile(io, filename, .{});
+    const stat = try fil.stat(io);
+    const size = std.math.cast(usize, stat.size) orelse return error.FileTooBig;
+    const buf = try gpa.alloc(u8, size);
+    if (try fil.readStreaming(io, &.{buf}) < size) {
+        return error.IOError;
+    }
+    return buf;
 }
