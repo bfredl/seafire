@@ -20,6 +20,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const Translator = @import("translate_c").Translator;
+
+    // You *can* pass `target` and/or `optimize` in the options struct here, but it's typically
+    // not necessary. You usually want to build for the host target, which is the default.
+    const translate_c = b.dependency("translate_c", .{});
+
+    const t: Translator = .init(translate_c, .{
+        .c_source_file = b.path("src/alsa_inc.h"),
+        .target = target,
+        .optimize = optimize,
+        // more options go here (see below)
+    });
+    // If you want, you can now call methods on `Translator` to add include paths (etc).
+
     const exe = b.addExecutable(.{
         .name = "old_seafire",
         .root_module = b.createModule(.{
@@ -34,10 +48,12 @@ pub fn build(b: *std.Build) void {
 
     const thelib = portaudio.artifact("portaudio");
     exe.root_module.linkLibrary(thelib);
-    b.installArtifact(exe);
+    // b.installArtifact(exe);
 
     const aexe = b.addExecutable(.{
         .name = "seafire",
+        .use_lld = true,
+        .use_llvm = true,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/amain.zig"),
             .target = target,
@@ -45,6 +61,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "seafire", .module = mod },
+                .{ .name = "asoundlib", .module = t.mod },
             },
         }),
     });
