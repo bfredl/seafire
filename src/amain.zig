@@ -46,7 +46,7 @@ const Channel = struct {
 
 fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void {
     var buffer: [MAX_FRAMES][2]i16 = undefined;
-    const num_samples = 10 * sample_rate;
+    const num_samples = 200 * sample_rate;
     const math = std.math;
     const FREQUENCY = 440.0;
     const DECREAS = 0.2;
@@ -56,11 +56,13 @@ fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void
     const one_over = 2 * math.pi / @as(f64, sample_rate);
     const seq_ticklen: u32 = @trunc(@as(f64, sample_rate) * 0.3);
 
+    const sequins: [9]u32 = .{ 0, 10, 13, 18, 5, 0, 8, 10, 13 };
+
     var ch: Channel = .{
         .tfreq = FREQUENCY * one_over,
         .ratio = .{ 3.0, 2.0, 1.0 },
         .phase_off = .{ 0, 0, 0 },
-        .attn = .{ 0.1, 0.1, 0.2 },
+        .attn = .{ 1.3, 0.9, 0.6 },
     };
 
     var j: u32 = 0;
@@ -71,7 +73,7 @@ fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void
 
         var bus: f64 = 0;
         for (0..3) |k| {
-            bus = ch.attn[k] + math.sin(ch.phase_off[k] + ch.ratio[k] * ch.tfreq * t + bus);
+            bus = ch.attn[k] * math.sin(ch.phase_off[k] + ch.ratio[k] * ch.tfreq * t + bus);
         }
 
         const sl = DECREAS * bus;
@@ -94,10 +96,16 @@ fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void
 
         seq_t += 1;
         if (seq_t >= seq_ticklen) {
-            ch.ratio[1] = 5.0 - ch.ratio[1];
+            ch.attn[0] = 0.92 * ch.attn[0];
+            ch.attn[1] = 0.98 * ch.attn[1];
+            // ch.ratio[1] = 5.0 - ch.ratio[1];
 
             tick += 1;
             seq_t = 0;
+
+            const note = sequins[tick % sequins.len];
+            const freq = 440.0 * math.pow(f64, 2, note / @as(f64, 31.0));
+            ch.tfreq = freq * one_over;
         }
     }
 }
