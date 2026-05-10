@@ -37,26 +37,67 @@ pub fn main() !void {
 
 }
 
+const Channel = struct {
+    tfreq: f64, // really 2*pi*freq
+    ratio: [3]f64,
+    phase_off: [3]f64,
+    attn: [3]f64,
+};
+
 fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void {
     var buffer: [MAX_FRAMES][2]i16 = undefined;
     const num_samples = 10 * sample_rate;
     const math = std.math;
     const FREQUENCY = 440.0;
     const DECREAS = 0.2;
-    for (0..(num_samples / period_size)) |i| {
-        for (0..period_size) |j| {
-            const t = @as(f64, @floatFromInt(i * period_size + j)) / sample_rate;
-            const q0 = math.sin(4.001 * math.pi * FREQUENCY * t) * (t - @trunc(t)) * 0.2;
-            const q = math.sin(5.001 * math.pi * FREQUENCY * t + q0) * (10 - t) * 0.2;
-            buffer[j][0] = @trunc((32767.0 * DECREAS * 0.1 * (10 - t) * math.sin(2.0 * math.pi * FREQUENCY * t + q)));
-            buffer[j][1] = @trunc((32767.0 * DECREAS * 0.1 * (10 - t) * math.sin(3.0 * math.pi * FREQUENCY * t + q)));
+
+    std.debug.print("sampel {} fast {}\n", .{ sample_rate, period_size });
+
+    const one_over = 2 * math.pi / @as(f64, sample_rate);
+    const seq_ticklen: u32 = @trunc(@as(f64, sample_rate) * 0.3);
+
+    var ch: Channel = .{
+        .tfreq = FREQUENCY * one_over,
+        .ratio = .{ 3.0, 2.0, 1.0 },
+        .phase_off = .{ 0, 0, 0 },
+        .attn = .{ 0.1, 0.1, 0.2 },
+    };
+
+    var j: u32 = 0;
+    var tick: u32 = 0;
+    var seq_t: u32 = 0;
+    for (0..num_samples) |i| {
+        const t: f64 = @floatFromInt(i);
+
+        var bus: f64 = 0;
+        for (0..3) |k| {
+            bus = ch.attn[k] + math.sin(ch.phase_off[k] + ch.ratio[k] * ch.tfreq * t + bus);
         }
-        const res = c.snd_pcm_writei(pcm, @ptrCast(&buffer), period_size);
-        if (res == -c.EPIPE) {
-            std.debug.print("pipad:(\n", .{});
-            try ok(c.snd_pcm_prepare(pcm));
-        } else if (res < 0) {
-            try ok(@intCast(res)); // NOT OK :(
+
+        const sl = DECREAS * bus;
+        const sr = DECREAS * bus;
+
+        buffer[j][0] = @trunc((32767.0 * sl));
+        buffer[j][1] = @trunc((32767.0 * sr));
+
+        j += 1;
+        if (j == period_size) {
+            const res = c.snd_pcm_writei(pcm, @ptrCast(&buffer), 1 * period_size);
+            if (res == -c.EPIPE) {
+                std.debug.print("pipad:(\n", .{});
+                try ok(c.snd_pcm_prepare(pcm));
+            } else if (res < 0) {
+                try ok(@intCast(res)); // NOT OK :(
+            }
+            j = 0;
+        }
+
+        seq_t += 1;
+        if (seq_t >= seq_ticklen) {
+            ch.ratio[1] = 5.0 - ch.ratio[1];
+
+            tick += 1;
+            seq_t = 0;
         }
     }
 }
