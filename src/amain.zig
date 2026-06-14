@@ -50,40 +50,50 @@ const Channel = struct {
 };
 
 const BASE_FREQUENCY = 440.0;
+const math = std.math;
+const pi = math.pi;
+
+ch: Channel = .{
+    .tfreq = 0,
+    .ratio = .{ 3.0, 2.0, 1.0 },
+    .phase_off = .{ 0, 0, 0 },
+    .attn = .{ 1.3, 0.9, 0.6 },
+},
+pat_pos: usize = 0,
+pattern: []u8,
+one_over: f64,
+
+fn render(ch: *Channel) f64 {
+    var bus: f64 = 0;
+    for (0..3) |k| {
+        ch.phase_off[k] += ch.ratio[k] * ch.tfreq;
+        bus = ch.attn[k] * std.math.sin(ch.phase_off[k] + bus);
+        if (ch.phase_off[k] > 2 * pi) {
+            ch.phase_off[k] -= 2 * pi;
+        }
+    }
+    return bus;
+}
 
 fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize, pattern: []u8) !void {
     var buffer: [MAX_FRAMES][2]i16 = undefined;
     const num_samples = 200 * sample_rate;
-    const math = std.math;
     const DECREAS = 0.2;
 
     std.debug.print("sampel {} fast {}\n", .{ sample_rate, period_size });
 
-    const one_over = 2 * math.pi / @as(f64, sample_rate);
     const seq_ticklen: u32 = @trunc(@as(f64, sample_rate) * 0.3);
 
-    var pat_pos: usize = 0;
-
-    var ch: Channel = .{
-        .tfreq = BASE_FREQUENCY * one_over,
-        .ratio = .{ 3.0, 2.0, 1.0 },
-        .phase_off = .{ 0, 0, 0 },
-        .attn = .{ 1.3, 0.9, 0.6 },
-    };
+    var self: @This() = .{ .pattern = pattern, .one_over = 2 * pi / @as(f64, sample_rate) };
+    var seq_t: u32 = 0;
 
     var j: u32 = 0;
-    var tick: u32 = 0;
-    var seq_t: u32 = 0;
-    for (0..num_samples) |i| {
-        const t: f64 = @floatFromInt(i);
+    // var tick: u32 = 0;
+    for (0..num_samples) |_| {
+        const sig = render(&self.ch);
 
-        var bus: f64 = 0;
-        for (0..3) |k| {
-            bus = ch.attn[k] * math.sin(ch.phase_off[k] + ch.ratio[k] * ch.tfreq * t + bus);
-        }
-
-        const sl = DECREAS * bus;
-        const sr = DECREAS * bus;
+        const sl = DECREAS * sig;
+        const sr = DECREAS * sig;
 
         buffer[j][0] = @trunc((32767.0 * sl));
         buffer[j][1] = @trunc((32767.0 * sr));
@@ -102,40 +112,51 @@ fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize, patte
 
         seq_t += 1;
         if (seq_t >= seq_ticklen) {
-            tick += 1;
+            self.seqtick();
             seq_t = 0;
-
-            while (true) {
-                while (pat_pos < pattern.len) : (pat_pos += 1) {
-                    if (pattern[pat_pos] != ' ') {
-                        break;
-                    }
-                }
-                if (pat_pos == pattern.len) {
-                    pat_pos = 0;
-                    break;
-                }
-                const cmd = pattern[pat_pos];
-                pat_pos += 1;
-                if (cmd == '\n') {
-                    if (pat_pos == pattern.len)
-                        pat_pos = 0;
-                    break;
-                }
-
-                if (cmd == 'n' or cmd == 'N') {
-                    const n = @as(u32, @intCast(num(pattern, &pat_pos))) + if (cmd == 'n') @as(u32, 31) else 0;
-                    const freq = 220.0 * math.pow(f64, 2, n / @as(f64, 31.0));
-                    ch.tfreq = freq * one_over;
-                } else if (cmd == 'a') {
-                    const n: u32 = @intCast(num(pattern, &pat_pos));
-                    ch.attn[2] = n / @as(f64, 100.0);
-                }
-            }
-            // ch.ratio[1] = 5.0 - ch.ratio[1];
-
         }
     }
+}
+
+pub fn seqtick(self: *@This()) void {
+    //tick += 1;
+    const p = self.pattern;
+    var pos = self.pat_pos;
+    var octave: u32 = 0;
+
+    while (true) {
+        while (pos < p.len) : (pos += 1) {
+            if (p[pos] != ' ') {
+                break;
+            }
+        }
+        if (pos == p.len) {
+            pos = 0;
+            break;
+        }
+        const cmd = p[pos];
+        pos += 1;
+        if (cmd == '\n') {
+            if (pos == p.len)
+                pos = 0;
+            break;
+        }
+
+        if (cmd == 'n' or cmd == 'N') {
+            const oct = octave + if (cmd == 'n') @as(u32, 1) else 0;
+            const n = @as(u32, @intCast(num(p, &pos))) + 31 * oct;
+            const freq = 220.0 * std.math.pow(f64, 2, n / @as(f64, 31.0));
+            self.ch.tfreq = freq * self.one_over;
+        } else if (cmd == 'a') {
+            const n: u32 = @intCast(num(p, &pos));
+            self.ch.attn[2] = n / @as(f64, 100.0);
+        } else if (cmd == 'o') {
+            octave = @intCast(num(p, &pos));
+        }
+    }
+    self.pat_pos = pos;
+    // ch.ratio[1] = 5.0 - ch.ratio[1];
+
 }
 
 pub fn num(p: []u8, pos: *usize) u64 {
