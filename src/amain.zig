@@ -53,12 +53,12 @@ const BASE_FREQUENCY = 440.0;
 const math = std.math;
 const pi = math.pi;
 
-ch: Channel = .{
+ch: [4]Channel = @splat(.{
     .tfreq = 0,
     .ratio = .{ 3.0, 2.0, 1.0 },
     .phase_off = .{ 0, 0, 0 },
-    .attn = .{ 1.3, 0.9, 0.6 },
-},
+    .attn = .{ 1.3, 0.9, 0.0 },
+}),
 pat_pos: usize = 0,
 pattern: []u8,
 one_over: f64,
@@ -90,10 +90,14 @@ fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize, patte
     var j: u32 = 0;
     // var tick: u32 = 0;
     for (0..num_samples) |_| {
-        const sig = render(&self.ch);
+        var sl: f64 = 0;
+        var sr: f64 = 0;
 
-        const sl = DECREAS * sig;
-        const sr = DECREAS * sig;
+        for (&self.ch) |*ch| {
+            const sig = render(ch);
+            sl += DECREAS * sig;
+            sr += DECREAS * sig;
+        }
 
         buffer[j][0] = @trunc((32767.0 * sl));
         buffer[j][1] = @trunc((32767.0 * sr));
@@ -124,6 +128,9 @@ pub fn seqtick(self: *@This()) void {
     var pos = self.pat_pos;
     var octave: u32 = 0;
 
+    var ch = &self.ch[0];
+    var chix: u32 = 0;
+
     while (true) {
         while (pos < p.len) : (pos += 1) {
             if (p[pos] != ' ') {
@@ -142,17 +149,21 @@ pub fn seqtick(self: *@This()) void {
             break;
         }
 
-        if (cmd == 'n' or cmd == 'N') {
+        if (cmd == ',') {
+            chix += 1;
+            if (chix >= self.ch.len) @panic("at the bar");
+            ch = &self.ch[chix];
+        } else if (cmd == 'n' or cmd == 'N') {
             const oct = octave + if (cmd == 'n') @as(u32, 1) else 0;
             const n = @as(u32, @intCast(num(p, &pos))) + 31 * oct;
             const freq = 220.0 * std.math.pow(f64, 2, n / @as(f64, 31.0));
-            self.ch.tfreq = freq * self.one_over;
+            ch.tfreq = freq * self.one_over;
         } else if (note(cmd, p, &pos)) |n| {
             const freq = 220.0 * std.math.pow(f64, 2, (n - 2 * 31 - 23) / @as(f64, 31.0));
-            self.ch.tfreq = freq * self.one_over;
+            ch.tfreq = freq * self.one_over;
         } else if (cmd == 'v') {
             const n: u32 = @intCast(num(p, &pos));
-            self.ch.attn[2] = n / @as(f64, 100.0);
+            ch.attn[2] = n / @as(f64, 100.0);
         } else if (cmd == 'o') {
             octave = @intCast(num(p, &pos));
         }
