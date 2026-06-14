@@ -147,7 +147,10 @@ pub fn seqtick(self: *@This()) void {
             const n = @as(u32, @intCast(num(p, &pos))) + 31 * oct;
             const freq = 220.0 * std.math.pow(f64, 2, n / @as(f64, 31.0));
             self.ch.tfreq = freq * self.one_over;
-        } else if (cmd == 'a') {
+        } else if (note(cmd, p, &pos)) |n| {
+            const freq = 220.0 * std.math.pow(f64, 2, (n - 2 * 31 - 23) / @as(f64, 31.0));
+            self.ch.tfreq = freq * self.one_over;
+        } else if (cmd == 'v') {
             const n: u32 = @intCast(num(p, &pos));
             self.ch.attn[2] = n / @as(f64, 100.0);
         } else if (cmd == 'o') {
@@ -170,6 +173,38 @@ pub fn num(p: []u8, pos: *usize) u64 {
         }
     }
     return val;
+}
+
+pub fn note(sym: u8, p: []u8, pos: *usize) ?i32 {
+    const symval: i32 = switch (sym) {
+        'c', 'C' => 0,
+        'd', 'D' => 5,
+        'e', 'E' => 10,
+        'f', 'F' => 13,
+        'g', 'G' => 18,
+        'a', 'A' => 23,
+        'b', 'B' => 28,
+        else => return null,
+    };
+
+    if (pos.* + 2 > p.len) @panic("haha");
+    const sign = p[pos.*];
+    const oct = p[pos.* + 1];
+    pos.* += 2;
+
+    const signval: i32 = switch (sign) {
+        'b' => -2,
+        '<' => -1,
+        '-' => 0,
+        '|' => 1,
+        '#' => 2,
+        else => @panic("y"),
+    };
+
+    if (!('0' <= oct and oct <= '9')) @panic("aaaa");
+    const octval = (oct - '0') * 31;
+
+    return symval + signval + octval;
 }
 
 fn ok(status: c_int) !void {
