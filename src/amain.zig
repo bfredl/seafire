@@ -164,6 +164,14 @@ pub fn seqtick(self: *@This()) void {
         } else if (cmd == 'v') {
             const n: u32 = @intCast(num(p, &pos));
             ch.attn[2] = n / @as(f64, 100.0);
+        } else if (cmd == 'r') {
+            for (0..2) |i| {
+                const k = p[pos];
+                if ('0' <= k and k <= '9') {
+                    ch.ratio[i] = k - '0';
+                    pos += 1;
+                } else break;
+            }
         } else if (cmd == 'o') {
             octave = @intCast(num(p, &pos));
         }
