@@ -12,8 +12,10 @@ pub fn main(init: std.process.Init) !void {
     const firstarg = std.mem.span(argv[1]);
     const readin = try readall(init.io, init.gpa, firstarg);
 
+    const pattern = readin;
+
     var sample_rate: c_uint = 44100;
-    var self: @This() = .{ .pattern = readin, .one_over = 2 * pi / @as(f64, sample_rate) };
+    var self: @This() = .{ .pattern = pattern, .one_over = 2 * pi / @as(f64, sample_rate) };
 
     if (argv.len >= 3) {
         const second = std.mem.span(argv[2]);
