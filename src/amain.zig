@@ -94,7 +94,6 @@ fn render(ch: *Channel) f64 {
 
 fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void {
     var buffer: [MAX_FRAMES][2]i16 = undefined;
-    const num_samples = 200 * sample_rate;
     const DECREAS = 0.4;
 
     std.debug.print("sampel {} fast {}\n", .{ sample_rate, period_size });
@@ -110,52 +109,44 @@ fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_si
     const in_gain = 1.0;
     const out_gain = 1.0;
 
-    var j: u32 = 0;
     // var tick: u32 = 0;
-    for (0..num_samples) |_| {
-        for (&self.ch) |*ch| {
-            const sig = render(ch);
-            bus[j] += @floatCast(sig);
+    while (true) {
+        for (0..period_size) |j| {
+            for (&self.ch) |*ch| {
+                const sig = render(ch);
+                bus[j] += @floatCast(sig);
+            }
+
+            seq_t += 1;
+            if (seq_t >= seq_ticklen) {
+                self.seqtick();
+                seq_t = 0;
+            }
         }
 
-        // var sl: f64 = 0;
-        // var sr: f64 = 0;
-        // buffer[j][0] = @trunc((32767.0 * sl));
-        // buffer[j][1] = @trunc((32767.0 * sr));
-
-        j += 1;
-        if (j == period_size) {
-            const ik = 32767.0 * DECREAS;
-            if (self.has_amp) {
-                if (!c.process_model(&self.amp, &bus, &amp_out, period_size, self.history.ptr, &pekare, self.scratch.ptr, in_gain, out_gain)) {
-                    return error.WAA;
-                }
-                for (0..period_size) |k| {
-                    buffer[k][0] = @trunc((ik * amp_out[k]));
-                    buffer[k][1] = @trunc((ik * amp_out[k]));
-                }
-            } else {
-                for (0..period_size) |k| {
-                    buffer[k][0] = @trunc((ik * bus[k]));
-                    buffer[k][1] = @trunc((ik * bus[k]));
-                }
+        const ik = 32767.0 * DECREAS;
+        if (self.has_amp) {
+            if (!c.process_model(&self.amp, &bus, &amp_out, period_size, self.history.ptr, &pekare, self.scratch.ptr, in_gain, out_gain)) {
+                return error.WAA;
             }
-            @memset(&bus, 0.0);
-
-            const res = c.snd_pcm_writei(pcm, @ptrCast(&buffer), 1 * period_size);
-            if (res == -c.EPIPE) {
-                std.debug.print("pipad:(\n", .{});
-                try ok(c.snd_pcm_prepare(pcm));
-            } else if (res < 0) {
-                try ok(@intCast(res)); // NOT OK :(
+            for (0..period_size) |k| {
+                buffer[k][0] = @trunc((ik * amp_out[k]));
+                buffer[k][1] = @trunc((ik * amp_out[k]));
             }
-            j = 0;
+        } else {
+            for (0..period_size) |k| {
+                buffer[k][0] = @trunc((ik * bus[k]));
+                buffer[k][1] = @trunc((ik * bus[k]));
+            }
         }
+        @memset(&bus, 0.0);
 
-        seq_t += 1;
-        if (seq_t >= seq_ticklen) {
-            self.seqtick();
-            seq_t = 0;
+        const res = c.snd_pcm_writei(pcm, @ptrCast(&buffer), 1 * period_size);
+        if (res == -c.EPIPE) {
+            std.debug.print("pipad:(\n", .{});
+            try ok(c.snd_pcm_prepare(pcm));
+        } else if (res < 0) {
+            try ok(@intCast(res)); // NOT OK :(
         }
     }
 }
