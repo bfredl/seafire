@@ -49,6 +49,12 @@ pub fn build(b: *std.Build) void {
     const thelib = portaudio.artifact("portaudio");
     exe.root_module.linkLibrary(thelib);
     // b.installArtifact(exe);
+    //
+    const smol: Translator = .init(translate_c, .{
+        .c_source_file = b.path("src/smol_model.h"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const aexe = b.addExecutable(.{
         .name = "seafire",
@@ -62,10 +68,13 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "seafire", .module = mod },
                 .{ .name = "asoundlib", .module = t.mod },
+                .{ .name = "c", .module = smol.mod },
             },
         }),
     });
     aexe.root_module.linkSystemLibrary("asound", .{});
+    aexe.root_module.addCSourceFile(.{ .file = b.path("src/smol_reader.c") });
+    aexe.root_module.addCSourceFile(.{ .file = b.path("src/smol_process.c") });
     b.installArtifact(aexe);
 
     const run_step = b.step("run", "Run the app");

@@ -12,6 +12,15 @@ pub fn main(init: std.process.Init) !void {
     const firstarg = std.mem.span(argv[1]);
     const readin = try readall(init.io, init.gpa, firstarg);
 
+    if (argv.len >= 3) {
+        const second = std.mem.span(argv[2]);
+        const buf = try readall(init.io, init.gpa, second);
+        defer init.gpa.free(buf);
+        var model: c.WaveNetModel = undefined;
+        const status = c.read_model(&model, buf.ptr, buf.len, MAX_FRAMES);
+        if (!status) return error.WAFFEL;
+    }
+
     try ok(c.snd_pcm_open(&pcm, PCM_DEVICE, c.SND_PCM_STREAM_PLAYBACK, 0));
 
     var params: ?*c.snd_pcm_hw_params_t = undefined;
