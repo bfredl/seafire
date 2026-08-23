@@ -12,13 +12,19 @@ pub fn main(init: std.process.Init) !void {
     const firstarg = std.mem.span(argv[1]);
     const readin = try readall(init.io, init.gpa, firstarg);
 
+    var sample_rate: c_uint = 44100;
+    var self: @This() = .{ .pattern = readin, .one_over = 2 * pi / @as(f64, sample_rate) };
+
     if (argv.len >= 3) {
         const second = std.mem.span(argv[2]);
         const buf = try readall(init.io, init.gpa, second);
         defer init.gpa.free(buf);
-        var model: c.WaveNetModel = undefined;
-        const status = c.read_model(&model, buf.ptr, buf.len, MAX_FRAMES);
+        const status = c.read_model(&self.amp, buf.ptr, buf.len, MAX_FRAMES);
         if (!status) return error.WAFFEL;
+        self.has_amp = true;
+
+        self.history = try init.gpa.alloc(f32, self.amp.history_size);
+        self.scratch = try init.gpa.alloc(f32, @as(usize, @intCast(self.amp.n_chan)) * MAX_FRAMES);
     }
 
     try ok(c.snd_pcm_open(&pcm, PCM_DEVICE, c.SND_PCM_STREAM_PLAYBACK, 0));
@@ -27,9 +33,7 @@ pub fn main(init: std.process.Init) !void {
     try ok(c.snd_pcm_hw_params_malloc(&params));
     try ok(c.snd_pcm_hw_params_any(pcm, params));
 
-    var sample_rate: c_uint = 44100;
-
-    var frames: c.snd_pcm_uframes_t = MAX_FRAMES; // Number of frames per period
+    var frames: c.snd_pcm_uframes_t = MAX_FRAMES / 2; // Number of frames per period
     var period_size: c.snd_pcm_uframes_t = undefined;
 
     var dir: c_int = undefined;
@@ -45,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
     _ = c.snd_pcm_hw_params_get_period_size(params, &period_size, &dir);
     std.debug.print("afka {} but {}\n", .{ period_size, frames });
 
-    try make_noise(pcm, sample_rate, period_size, readin);
+    try self.make_noise(pcm, sample_rate, period_size);
 
     // try ok(c.snd_pcm_prepare(pcm));
 
@@ -71,6 +75,10 @@ ch: [4]Channel = @splat(.{
 pat_pos: usize = 0,
 pattern: []u8,
 one_over: f64,
+has_amp: bool = false,
+amp: c.WaveNetModel = undefined,
+history: []f32 = undefined,
+scratch: []f32 = undefined,
 
 fn render(ch: *Channel) f64 {
     var bus: f64 = 0;
@@ -84,35 +92,56 @@ fn render(ch: *Channel) f64 {
     return bus;
 }
 
-fn make_noise(pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize, pattern: []u8) !void {
+fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_size: usize) !void {
     var buffer: [MAX_FRAMES][2]i16 = undefined;
     const num_samples = 200 * sample_rate;
-    const DECREAS = 0.2;
+    const DECREAS = 0.4;
 
     std.debug.print("sampel {} fast {}\n", .{ sample_rate, period_size });
 
     const seq_ticklen: u32 = @trunc(@as(f64, sample_rate) * 0.3);
 
-    var self: @This() = .{ .pattern = pattern, .one_over = 2 * pi / @as(f64, sample_rate) };
     var seq_t: u32 = 0;
+
+    var bus: [MAX_FRAMES]f32 = @splat(0);
+    var amp_out: [MAX_FRAMES]f32 = @splat(0);
+    var pekare: usize = 0;
+
+    const in_gain = 1.0;
+    const out_gain = 1.0;
 
     var j: u32 = 0;
     // var tick: u32 = 0;
     for (0..num_samples) |_| {
-        var sl: f64 = 0;
-        var sr: f64 = 0;
-
         for (&self.ch) |*ch| {
             const sig = render(ch);
-            sl += DECREAS * sig;
-            sr += DECREAS * sig;
+            bus[j] += @floatCast(sig);
         }
 
-        buffer[j][0] = @trunc((32767.0 * sl));
-        buffer[j][1] = @trunc((32767.0 * sr));
+        // var sl: f64 = 0;
+        // var sr: f64 = 0;
+        // buffer[j][0] = @trunc((32767.0 * sl));
+        // buffer[j][1] = @trunc((32767.0 * sr));
 
         j += 1;
         if (j == period_size) {
+            const ik = 32767.0 * DECREAS;
+            if (self.has_amp) {
+                if (!c.process_model(&self.amp, &bus, &amp_out, period_size, self.history.ptr, &pekare, self.scratch.ptr, in_gain, out_gain)) {
+                    return error.WAA;
+                }
+                for (0..period_size) |k| {
+                    buffer[k][0] = @trunc((ik * amp_out[k]));
+                    buffer[k][1] = @trunc((ik * amp_out[k]));
+                }
+            } else {
+                for (0..period_size) |k| {
+                    buffer[k][0] = @trunc((ik * bus[k]));
+                    buffer[k][1] = @trunc((ik * bus[k]));
+                }
+            }
+            @memset(&bus, 0.0);
+
             const res = c.snd_pcm_writei(pcm, @ptrCast(&buffer), 1 * period_size);
             if (res == -c.EPIPE) {
                 std.debug.print("pipad:(\n", .{});
