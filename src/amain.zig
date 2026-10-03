@@ -10,12 +10,10 @@ pub fn main(init: std.process.Init) !void {
     const argv = init.minimal.args.vector;
     if (argv.len < 2) return error.usage;
     const firstarg = std.mem.span(argv[1]);
-    const readin = try readall(init.io, init.gpa, firstarg);
-    defer init.gpa.free(readin);
 
     var sample_rate: c_uint = 44100;
-    var self: @This() = .{ .gpa = init.gpa, .one_over = 2 * pi / @as(f64, sample_rate) };
-    try self.parse(readin);
+    var self: @This() = try .start(init.io, init.gpa, sample_rate, firstarg);
+    defer self.deinit();
 
     if (argv.len >= 3) {
         const second = std.mem.span(argv[2]);
@@ -57,6 +55,33 @@ pub fn main(init: std.process.Init) !void {
 
 }
 
+fn start(io: std.Io, gpa: std.mem.Allocator, sample_rate: u32, filename: []const u8) !@This() {
+    var self: @This() = .{ .gpa = gpa, .one_over = 2 * pi / @as(f64, sample_rate), .filename = filename };
+    const readin = try readall(io, gpa, filename);
+    self.cur_file_buf = readin;
+    try self.parse(readin);
+    return self;
+}
+
+fn deinit(self: *@This()) void {
+    if (self.last_file_buf) |b| self.gpa.free(b);
+    if (self.cur_file_buf) |b| self.gpa.free(b);
+}
+
+fn reload(self: @This(), io: std.Io) !void {
+    const readin = try readall(io, self.gpa, self.filename);
+    self.cur_file_buf = readin;
+    self.parse(readin) catch {
+        self.debug.print("yet we go on...\n", {});
+    };
+    if (self.last_file_buf) |_| {
+        if (self.cur_file_buf) |b| self.gpa.free(b);
+    } else {
+        self.last_file_buf = self.cur_file_buf;
+    }
+    self.cur_file_buf = readin;
+}
+
 const Channel = struct {
     tfreq: f64, // really 2*pi*freq
     ratio: [3]f64,
@@ -77,13 +102,20 @@ ch: [4]Channel = @splat(.{
 gpa: std.mem.Allocator,
 pat_pos: usize = 0,
 patterns: std.ArrayList([]u8) = .empty,
+next_pat_id: u32 = 0,
+cur_pat: ?[]u8 = null,
 one_over: f64,
 has_amp: bool = false,
 amp: c.WaveNetModel = undefined,
 history: []f32 = undefined,
 scratch: []f32 = undefined,
+filename: []const u8,
 
-fn parse(self: *@This(), readin: []u8) !void {
+// a little clutshy, probably we will get to the state where nothing is used,
+last_file_buf: ?[]u8 = null,
+cur_file_buf: ?[]u8 = null,
+
+fn parse(self: *@This(), readin: []u8) error{ ParseError, OutOfMemory }!void {
     var t = @import("./Tokenizer.zig"){ .str = readin };
     errdefer t.fail_pos();
 
@@ -184,14 +216,21 @@ fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_si
     }
 }
 
+pub fn next_pat(self: *@This()) void {
+    self.cur_pat = self.patterns.items[self.next_pat_id];
+    self.pat_pos = 0;
+}
+
 pub fn seqtick(self: *@This()) void {
     //tick += 1;
-    const p = self.patterns.items[0];
+    if (self.cur_pat == null) self.next_pat();
+    const p = self.cur_pat orelse @panic("aa");
     var pos = self.pat_pos;
     var octave: u32 = 0;
 
     var ch = &self.ch[0];
     var chix: u32 = 0;
+    var end_pat = false;
 
     while (true) {
         while (pos < p.len) : (pos += 1) {
@@ -200,14 +239,14 @@ pub fn seqtick(self: *@This()) void {
             }
         }
         if (pos == p.len) {
-            pos = 0;
+            end_pat = true;
             break;
         }
         const cmd = p[pos];
         pos += 1;
         if (cmd == '\n') {
             if (pos == p.len)
-                pos = 0;
+                end_pat = true;
             break;
         }
 
@@ -238,6 +277,15 @@ pub fn seqtick(self: *@This()) void {
             octave = @intCast(num(p, &pos));
         }
     }
+
+    if (end_pat) {
+        self.cur_pat = null;
+        if (self.last_file_buf) |buf| {
+            self.gpa.free(buf);
+            self.last_file_buf = null;
+        }
+    }
+
     self.pat_pos = pos;
     // ch.ratio[1] = 5.0 - ch.ratio[1];
 
