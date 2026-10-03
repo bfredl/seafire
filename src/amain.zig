@@ -11,11 +11,11 @@ pub fn main(init: std.process.Init) !void {
     if (argv.len < 2) return error.usage;
     const firstarg = std.mem.span(argv[1]);
     const readin = try readall(init.io, init.gpa, firstarg);
-
-    const pattern = readin;
+    defer init.gpa.free(readin);
 
     var sample_rate: c_uint = 44100;
-    var self: @This() = .{ .pattern = pattern, .one_over = 2 * pi / @as(f64, sample_rate) };
+    var self: @This() = .{ .gpa = init.gpa, .one_over = 2 * pi / @as(f64, sample_rate) };
+    try self.parse(readin);
 
     if (argv.len >= 3) {
         const second = std.mem.span(argv[2]);
@@ -74,13 +74,44 @@ ch: [4]Channel = @splat(.{
     .phase_off = .{ 0, 0, 0 },
     .attn = .{ 1.3, 0.9, 0.0 },
 }),
+gpa: std.mem.Allocator,
 pat_pos: usize = 0,
-pattern: []u8,
+patterns: std.ArrayList([]u8) = .empty,
 one_over: f64,
 has_amp: bool = false,
 amp: c.WaveNetModel = undefined,
 history: []f32 = undefined,
 scratch: []f32 = undefined,
+
+fn parse(self: *@This(), readin: []u8) !void {
+    var t = @import("./Tokenizer.zig"){ .str = readin };
+    errdefer t.fail_pos();
+
+    while (t.nonws()) |magic| {
+        if (magic == '\n' or magic == '/') {
+            try t.lbrk();
+            continue;
+        }
+
+        try t.expect_char('#');
+        const kw = t.keyword() orelse return error.ParseError;
+
+        if (std.mem.eql(u8, kw, "pattern")) {
+            try t.lbrk();
+            const start_pos = t.pos;
+            while (t.nonws()) |imagic| {
+                if (imagic == '#') break;
+                t.skipline();
+            }
+            const end_pos = t.pos;
+            std.debug.print("pattern {} to {}\n", .{ start_pos, end_pos });
+            try self.patterns.append(self.gpa, readin[start_pos..end_pos]);
+        } else {
+            return error.ParseError;
+        }
+    }
+    if (self.patterns.items.len == 0) @panic("aaa");
+}
 
 fn render(ch: *Channel) f64 {
     var bus: f64 = 0;
@@ -155,7 +186,7 @@ fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_si
 
 pub fn seqtick(self: *@This()) void {
     //tick += 1;
-    const p = self.pattern;
+    const p = self.patterns.items[0];
     var pos = self.pat_pos;
     var octave: u32 = 0;
 
