@@ -240,7 +240,10 @@ fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_si
 }
 
 pub fn check_input(self: *@This()) !void {
-    try self.reader.fillMore();
+    self.reader.fillMore() catch |e| {
+        if (e == error.EndOfStream) return;
+        return e;
+    };
     const len = self.reader.bufferedLen();
     if (len > 0) {
         const byte = try self.reader.takeByte();
@@ -407,18 +410,18 @@ fn makeSemiRawTTY(fd: std.posix.fd_t) !std.posix.termios {
     raw.iflag.ICRNL = false;
     raw.iflag.IXON = false;
 
-    raw.oflag.OPOST = false;
+    // raw.oflag.OPOST = false;
 
     //raw.lflag.ECHO = false;
     // raw.lflag.ECHONL = false;
     raw.lflag.ICANON = false;
-    raw.lflag.ISIG = false;
+    // raw.lflag.ISIG = false;
     raw.lflag.IEXTEN = false;
 
     raw.cflag.CSIZE = .CS8;
     raw.cflag.PARENB = false;
 
-    raw.cc[@backingInt(std.posix.V.MIN)] = 1;
+    raw.cc[@backingInt(std.posix.V.MIN)] = 0;
     raw.cc[@backingInt(std.posix.V.TIME)] = 0;
     try std.posix.tcsetattr(fd, .FLUSH, raw);
     return state;
