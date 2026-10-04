@@ -56,7 +56,12 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn start(io: std.Io, gpa: std.mem.Allocator, sample_rate: u32, filename: []const u8) !@This() {
-    var self: @This() = .{ .gpa = gpa, .one_over = 2 * pi / @as(f64, sample_rate), .filename = filename };
+    var self: @This() = .{
+        .gpa = gpa,
+        .one_over = 2 * pi / @as(f64, sample_rate),
+        .filename = filename,
+        .rng = .init(2),
+    };
     const readin = try readall(io, gpa, filename);
     self.cur_file_buf = readin;
     try self.parse(readin);
@@ -102,7 +107,7 @@ ch: [4]Channel = @splat(.{
 gpa: std.mem.Allocator,
 pat_pos: usize = 0,
 patterns: std.ArrayList([]u8) = .empty,
-next_pat_id: u32 = 0,
+next_pat_id: usize = 0,
 cur_pat: ?[]u8 = null,
 one_over: f64,
 has_amp: bool = false,
@@ -110,6 +115,7 @@ amp: c.WaveNetModel = undefined,
 history: []f32 = undefined,
 scratch: []f32 = undefined,
 filename: []const u8,
+rng: std.Random.DefaultPrng,
 
 // a little clutshy, probably we will get to the state where nothing is used,
 last_file_buf: ?[]u8 = null,
@@ -219,6 +225,8 @@ fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_si
 pub fn next_pat(self: *@This()) void {
     self.cur_pat = self.patterns.items[self.next_pat_id];
     self.pat_pos = 0;
+    const rand = self.rng.random();
+    self.next_pat_id = rand.intRangeLessThan(usize, 0, self.patterns.items.len);
 }
 
 pub fn seqtick(self: *@This()) void {

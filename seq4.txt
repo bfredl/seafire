@@ -1,0 +1,11 @@
+#pattern a
+f-2 v20, a-2 v20, c-3 v20, e|3 v5
+v15,v15,v15,v3
+v10,v10,v10,v2
+v2,v2,v2,v2
+#pattern
+g-3 v10, a-3 v25, c-3 v20, g-4 v5
+v15,v15,v15,v3
+v10,v10,v10,v2
+v2,v2,v2,v2
+v2,v2,v2,v2
