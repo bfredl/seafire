@@ -11,8 +11,11 @@ pub fn main(init: std.process.Init) !void {
     if (argv.len < 2) return error.usage;
     const firstarg = std.mem.span(argv[1]);
 
+    var ibuf: [1024]u8 = undefined;
+    var reader = std.Io.File.stdin().reader(init.io, &ibuf);
+
     var sample_rate: c_uint = 44100;
-    var self: @This() = try .start(init.io, init.gpa, sample_rate, firstarg);
+    var self: @This() = try .start(init.io, init.gpa, sample_rate, firstarg, &reader.interface);
     defer self.deinit();
 
     if (argv.len >= 3) {
@@ -49,18 +52,23 @@ pub fn main(init: std.process.Init) !void {
     _ = c.snd_pcm_hw_params_get_period_size(params, &period_size, &dir);
     std.debug.print("afka {} but {}\n", .{ period_size, frames });
 
+    const tty_fd = 0; // LFG
+    const termios = try makeSemiRawTTY(tty_fd);
+    defer std.posix.tcsetattr(tty_fd, .FLUSH, termios) catch @panic("AAAAA");
+
     try self.make_noise(pcm, sample_rate, period_size);
 
     // try ok(c.snd_pcm_prepare(pcm));
 
 }
 
-fn start(io: std.Io, gpa: std.mem.Allocator, sample_rate: u32, filename: []const u8) !@This() {
+fn start(io: std.Io, gpa: std.mem.Allocator, sample_rate: u32, filename: []const u8, reader: *std.Io.Reader) !@This() {
     var self: @This() = .{
         .gpa = gpa,
         .one_over = 2 * pi / @as(f64, sample_rate),
         .filename = filename,
         .rng = .init(2),
+        .reader = reader,
     };
     const readin = try readall(io, gpa, filename);
     self.cur_file_buf = readin;
@@ -106,9 +114,9 @@ ch: [4]Channel = @splat(.{
 }),
 gpa: std.mem.Allocator,
 pat_pos: usize = 0,
-patterns: std.ArrayList([]u8) = .empty,
+patterns: std.ArrayList(Pattern) = .empty,
 next_pat_id: usize = 0,
-cur_pat: ?[]u8 = null,
+cur_pat: ?[]const u8 = null,
 one_over: f64,
 has_amp: bool = false,
 amp: c.WaveNetModel = undefined,
@@ -116,10 +124,16 @@ history: []f32 = undefined,
 scratch: []f32 = undefined,
 filename: []const u8,
 rng: std.Random.DefaultPrng,
+reader: *std.Io.Reader,
 
 // a little clutshy, probably we will get to the state where nothing is used,
 last_file_buf: ?[]u8 = null,
 cur_file_buf: ?[]u8 = null,
+
+const Pattern = struct {
+    data: []const u8,
+    name: ?[]const u8,
+};
 
 fn parse(self: *@This(), readin: []u8) error{ ParseError, OutOfMemory }!void {
     var t = @import("./Tokenizer.zig"){ .str = readin };
@@ -135,6 +149,7 @@ fn parse(self: *@This(), readin: []u8) error{ ParseError, OutOfMemory }!void {
         const kw = t.keyword() orelse return error.ParseError;
 
         if (std.mem.eql(u8, kw, "pattern")) {
+            const name = t.keyword();
             try t.lbrk();
             const start_pos = t.pos;
             while (t.nonws()) |imagic| {
@@ -143,7 +158,8 @@ fn parse(self: *@This(), readin: []u8) error{ ParseError, OutOfMemory }!void {
             }
             const end_pos = t.pos;
             std.debug.print("pattern {} to {}\n", .{ start_pos, end_pos });
-            try self.patterns.append(self.gpa, readin[start_pos..end_pos]);
+            const pat = readin[start_pos..end_pos];
+            try self.patterns.append(self.gpa, .{ .data = pat, .name = name });
         } else {
             return error.ParseError;
         }
@@ -190,6 +206,7 @@ fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_si
 
             seq_t += 1;
             if (seq_t >= seq_ticklen) {
+                try self.check_input();
                 self.seqtick();
                 seq_t = 0;
             }
@@ -222,8 +239,24 @@ fn make_noise(self: *@This(), pcm: ?*c.snd_pcm_t, sample_rate: c_uint, period_si
     }
 }
 
+pub fn check_input(self: *@This()) !void {
+    try self.reader.fillMore();
+    const len = self.reader.bufferedLen();
+    if (len > 0) {
+        const byte = try self.reader.takeByte();
+        for (self.patterns.items, 0..) |p, i| {
+            if (p.name) |n| {
+                if (n.len > 0 and n[0] == byte) {
+                    self.next_pat_id = i;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub fn next_pat(self: *@This()) void {
-    self.cur_pat = self.patterns.items[self.next_pat_id];
+    self.cur_pat = self.patterns.items[self.next_pat_id].data;
     self.pat_pos = 0;
     const rand = self.rng.random();
     self.next_pat_id = rand.intRangeLessThan(usize, 0, self.patterns.items.len);
@@ -299,7 +332,7 @@ pub fn seqtick(self: *@This()) void {
 
 }
 
-pub fn num(p: []u8, pos: *usize) u64 {
+pub fn num(p: []const u8, pos: *usize) u64 {
     var val: u64 = 0;
     while (pos.* < p.len) : (pos.* += 1) {
         const next = p[pos.*];
@@ -312,7 +345,7 @@ pub fn num(p: []u8, pos: *usize) u64 {
     return val;
 }
 
-pub fn note(sym: u8, p: []u8, pos: *usize) ?i32 {
+pub fn note(sym: u8, p: []const u8, pos: *usize) ?i32 {
     const symval: i32 = switch (sym) {
         'c', 'C' => 0,
         'd', 'D' => 5,
@@ -359,4 +392,34 @@ pub fn readall(io: std.Io, gpa: std.mem.Allocator, filename: []const u8) ![]u8 {
         return error.IOError;
     }
     return buf;
+}
+
+fn makeSemiRawTTY(fd: std.posix.fd_t) !std.posix.termios {
+    const state = try std.posix.tcgetattr(fd);
+    var raw = state;
+    // see termios(3)
+    // raw.iflag.IGNBRK = false;
+    // raw.iflag.BRKINT = false;
+    raw.iflag.PARMRK = false;
+    raw.iflag.ISTRIP = false;
+    raw.iflag.INLCR = false;
+    raw.iflag.IGNCR = false;
+    raw.iflag.ICRNL = false;
+    raw.iflag.IXON = false;
+
+    raw.oflag.OPOST = false;
+
+    //raw.lflag.ECHO = false;
+    // raw.lflag.ECHONL = false;
+    raw.lflag.ICANON = false;
+    raw.lflag.ISIG = false;
+    raw.lflag.IEXTEN = false;
+
+    raw.cflag.CSIZE = .CS8;
+    raw.cflag.PARENB = false;
+
+    raw.cc[@backingInt(std.posix.V.MIN)] = 1;
+    raw.cc[@backingInt(std.posix.V.TIME)] = 0;
+    try std.posix.tcsetattr(fd, .FLUSH, raw);
+    return state;
 }
