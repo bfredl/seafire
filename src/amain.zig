@@ -382,7 +382,8 @@ pub fn note(sym: u8, p: []const u8, pos: *usize) ?i32 {
 
 fn ok(status: c_int) !void {
     if (status < 0) {
-        std.debug.print("foooka: {s}\n", .{c.snd_strerror(status)});
+        std.debug.print("alsa error: {s}\n", .{c.snd_strerror(status)});
+        return error.SNDError;
     }
 }
 

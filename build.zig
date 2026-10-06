@@ -31,8 +31,6 @@ pub fn build(b: *std.Build) void {
 
     const aexe = b.addExecutable(.{
         .name = "seafire",
-        .use_lld = true,
-        .use_llvm = true,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/amain.zig"),
             .target = target,
